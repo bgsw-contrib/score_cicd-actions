@@ -13,6 +13,7 @@
 
 'use strict';
 
+const core = require('@actions/core');
 const os = require('os');
 const path = require('path');
 
@@ -38,4 +39,31 @@ function buildNetrcEntry(username, password) {
  */
 const NETRC_ENTRY_REGEX = new RegExp(`\\nmachine ${NETRC_MACHINE}\\n[ \\t]+login [^\\n]*\\n[ \\t]+password [^\\n]*\\n`, 'g');
 
-module.exports = { NETRC_PATH, NETRC_MACHINE, buildNetrcEntry, NETRC_ENTRY_REGEX };
+/** Environment variables exported by the main action that the post-action cleans up. */
+const EXPORTED_ENV_VARS = [
+  'QNX_CREDENTIAL_HELPER',
+  'QNXLM_LICENSE_FILE',
+  'QNX_LICENSE_EXTSERVER_DELAY',
+  'QNX_LICENSE_QUEUE_TIMEOUT',
+];
+
+/**
+ * Export a GitHub Actions environment variable, asserting the name is
+ * declared in EXPORTED_ENV_VARS so that common.js remains the single
+ * source of truth for the set of variables managed by this action.
+ * @param {string} name
+ * @param {string} value
+ */
+function exportVar(name, value) {
+  if (!EXPORTED_ENV_VARS.includes(name)) {
+    throw new Error(`Attempted to export undeclared variable '${name}'. Add it to EXPORTED_ENV_VARS in common.js first.`);
+  }
+  core.exportVariable(name, value);
+  if (value === '') {
+    core.info(`Set env var ${name} to an empty value`);
+  } else {
+    core.info(`Set env var ${name}=${value}`);
+  }
+}
+
+module.exports = { NETRC_PATH, NETRC_MACHINE, buildNetrcEntry, NETRC_ENTRY_REGEX, EXPORTED_ENV_VARS, exportVar };
