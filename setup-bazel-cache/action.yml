@@ -24,6 +24,11 @@ inputs:
     required: false
     default: "main"
 
+  skip-cache-restore:
+    description: Skip restoring the cache. Used for rebuilding a clean cache.
+    required: false
+    default: "false"
+
   # Non stable API, subject to change without deprecation. Not intended for public use.
   _bazelisk_cache:
     description: For debugging purposes only.
@@ -51,7 +56,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: castler/setup-bazel@68beb23a00fcbd742821ab5e8e730866fec63eaf # cache-optimized branch 2026-06-09
+    - uses: lurtz/setup-bazel@834129750bde586454e5b5343451dd8f3b901d55 # cache-optimized-part-2 as of 2026-07-17
       with:
         disk-cache: ${{ inputs.unique-cache-name }}
         cache-save: ${{ github.ref == format('refs/heads/{0}', inputs.main-branch) }}
@@ -60,3 +65,4 @@ runs:
         repository-cache: ${{ inputs._repository_cache }} # true
         cache-optimized: ${{ inputs._cache_optimized }} # true
         external-cache: ${{ inputs._external_cache }} # false
+        skip-cache-restore: ${{ inputs.skip-cache-restore }} # false
