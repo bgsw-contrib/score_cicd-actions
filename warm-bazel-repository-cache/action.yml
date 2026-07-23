@@ -12,71 +12,36 @@
 # *******************************************************************************
 
 name: Warm bazel repository cache
-description: Warm Bazel repository cache for all variants.
+description: Validate and warm Bazel repository cache for all variants.
 
 inputs:
   variants:
     description: |
-      Newline-separated list of arguments to append to `bazel fetch`.
+      Newline-separated list of Bazel targets with an optional leading
+      --config=<name> per line (no other --... options are supported).
       Each line is split on whitespace and passed as one fetch invocation.
       Examples: `--config=x86_64-linux //...`, `//...`, `//test //quality`.
     required: true
+  dry-run:
+    description: |
+      When set to true, validates `variants` and skips `bazel fetch`.
+      Validation still runs `bazel query`, which may resolve external repositories.
+      Accepted values are `true` and `false`.
+    required: false
+    default: "false"
 
 runs:
   using: composite
   steps:
-    - name: Warm Bazel repository cache for all variants (with retries)
+    - name: Validate variants input
       shell: bash
       env:
         VARIANTS_INPUT: ${{ inputs.variants }}
-      run: |
-        set -euo pipefail
+      run: bash "${{ github.action_path }}/validate_variants.sh" "$VARIANTS_INPUT"
 
-        mapfile -t variants < <(printf '%s\n' "$VARIANTS_INPUT" | sed '/^[[:space:]]*$/d')
-        if [ "${#variants[@]}" -eq 0 ]; then
-          echo "No variants were provided."
-          exit 1
-        fi
-
-        max_attempts=10
-        failed_variants=()
-
-        for variant in "${variants[@]}"; do
-          read -r -a fetch_args <<< "$variant"
-          if [[ "${#fetch_args[@]}" -eq 0 ]]; then
-            echo "Skipping empty bazel fetch arguments entry"
-            continue
-          fi
-
-          success=false
-
-          for attempt in $(seq 1 "$max_attempts"); do
-            echo "Running bazel fetch ${variant} (attempt ${attempt}/${max_attempts})"
-            bazel_fetch_cmd=(bazel fetch)
-
-            if "${bazel_fetch_cmd[@]}" "${fetch_args[@]}"; then
-              echo "Successfully fetched dependencies for arguments '${variant}'"
-              success=true
-              break
-            fi
-
-            if [ "$attempt" -lt "$max_attempts" ]; then
-              backoff_seconds=$((attempt * 20))
-              echo "bazel fetch failed (likely transient). Retrying in ${backoff_seconds}s..."
-              sleep "$backoff_seconds"
-            fi
-          done
-
-          if [ "$success" != "true" ]; then
-            echo "bazel fetch failed for arguments '${variant}' after ${max_attempts} attempts"
-            failed_variants+=("${variant}")
-          fi
-        done
-
-        if [ "${#failed_variants[@]}" -ne 0 ]; then
-          echo "Bazel fetch failed for the following variants:"
-          for variant in "${failed_variants[@]}"; do
-            echo "  - ${variant}"
-          done
-          exit 1
-        fi
+    - name: Warm Bazel repository cache for all variants (with retries)
+      shell: bash
+      if: ${{ inputs.dry-run != 'true' }}
+      env:
+        VARIANTS_INPUT: ${{ inputs.variants }}
+      run: bash "${{ github.action_path }}/warm_cache.sh" "$VARIANTS_INPUT"
