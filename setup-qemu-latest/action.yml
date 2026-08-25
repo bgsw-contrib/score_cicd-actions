@@ -43,6 +43,10 @@ inputs:
     description: QEMU target to validate with -machine help; empty disables validation.
     required: false
     default: "aarch64-softmmu"
+  kvm-mode:
+    description: Access mode for the /dev/kvm device udev rule.
+    required: false
+    default: "0666"
 
 outputs:
   install-prefix:
@@ -144,7 +148,13 @@ runs:
 
     - name: Enable KVM group permissions
       shell: bash
+      env:
+        KVM_MODE: ${{ inputs.kvm-mode }}
       run: |
-        echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+        if [[ ! "$KVM_MODE" =~ ^[0-7]{4}$ ]]; then
+          echo "Invalid kvm-mode value: '$KVM_MODE'. Expected a four-digit octal mode." >&2
+          exit 1
+        fi
+        echo "KERNEL==\"kvm\", GROUP=\"kvm\", MODE=\"$KVM_MODE\", OPTIONS+=\"static_node=kvm\"" | sudo tee /etc/udev/rules.d/99-kvm4all.rules
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
