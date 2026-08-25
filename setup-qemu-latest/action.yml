@@ -40,9 +40,9 @@ inputs:
     required: false
     default: ""
   validation-target:
-    description: QEMU target to validate with -machine help; empty disables validation.
+    description: QEMU target to validate with -machine help (e.g., aarch64);  empty disables validation.
     required: false
-    default: "aarch64-softmmu"
+    default: "aarch64"
   kvm-mode:
     description: Access mode for the /dev/kvm device udev rule.
     required: false
