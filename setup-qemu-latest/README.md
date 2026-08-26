@@ -73,7 +73,7 @@ The action adds `bin-path` to `PATH` for subsequent steps in the same job. Outpu
 
 ## Behavior
 
-- Existing apt-installed `qemu-system*` and `qemu-utils` packages are purged on a cache miss.
+- Existing apt-installed `qemu-system*` and `qemu-utils` packages are purged on a cache miss to avoid binary and dependency conflicts with the source-built QEMU version.
 - QEMU source archives are verified with the published SHA-512 checksum before extraction.
 - Builds are cached by runner OS, QEMU version, targets, configure arguments, and extra build dependencies.
 - Build dependencies remain installed for the rest of the job so later build or test steps can use them.
