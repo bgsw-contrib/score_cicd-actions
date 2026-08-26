@@ -74,7 +74,7 @@ The action adds `bin-path` to `PATH` for subsequent steps in the same job. Outpu
 ## Behavior
 
 - Existing apt-installed `qemu-system*` and `qemu-utils` packages are purged on a cache miss to avoid binary and dependency conflicts with the source-built QEMU version.
-- QEMU source archives are verified with the published SHA-512 checksum before extraction.
+- QEMU source archives are verified with the published detached GPG signature before extraction.
 - Builds are cached by runner OS, QEMU version, targets, configure arguments, and extra build dependencies.
 - Build dependencies remain installed for the rest of the job so later build or test steps can use them.
 - KVM device permissions are configured for the runner.
@@ -85,7 +85,7 @@ The action is intended for GitHub-hosted Ubuntu runners or compatible Linux runn
 
 - `sudo` access
 - `apt-get`
-- `curl`, `tar`, and `sha512sum`
+- `curl`, `tar`, and `gpg`
 - GitHub Actions cache support
 
 This action runs inside a GitHub Actions workflow. It cannot be referenced directly from `devcontainer.json` or used as a local shell setup script.
