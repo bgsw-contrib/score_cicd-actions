@@ -32,9 +32,7 @@ jobs:
         id: setup-qemu
         uses: ./setup-qemu-latest
         with:
-          qemu-targets: aarch64-softmmu
           validation-target: aarch64
-          kvm-mode: "0660"
           nproc: "2"
 
       - name: Verify outputs
@@ -71,22 +69,21 @@ jobs:
           "$qemu_bin" --version
           "$qemu_bin" -machine help | grep -Eq '(^|[[:space:]])raspi4b([[:space:]]|$)'
 
-      - name: Verify KVM udev mode was applied
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rule_file="/etc/udev/rules.d/99-kvm4all.rules"
-          if [[ ! -f "$rule_file" ]]; then
-            echo "ERROR: KVM rule file not found: $rule_file"
+          x86_qemu_bin="${{ steps.setup-qemu.outputs.bin-path }}/qemu-system-x86_64"
+          if [[ ! -x "$x86_qemu_bin" ]]; then
+            echo "ERROR: expected QEMU binary not found: $x86_qemu_bin"
             exit 1
           fi
 
-          if ! grep -Fq 'MODE="0660"' "$rule_file"; then
-            echo "ERROR: expected MODE=\"0660\" in $rule_file"
-            echo "Actual file contents:"
-            cat "$rule_file"
-            exit 1
-          fi
+          "$x86_qemu_bin" --version
+          if [[ -e /dev/kvm ]]; then
+            device_mode="$(stat -c '%a' /dev/kvm)"
+            if [[ "$device_mode" != "666" ]]; then
+              echo "ERROR: expected /dev/kvm mode 666, got $device_mode"
+              exit 1
+            fi
 
-          cat "$rule_file"
+            stat -c '%A %n' /dev/kvm
+          else
+            echo "KVM device not available on this runner; skipping permission check."
+          fi

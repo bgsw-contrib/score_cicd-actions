@@ -2,7 +2,7 @@
 
 Reusable composite action that builds QEMU from source, installs it on the runner, validates the selected machine target, and adds it to `PATH`.
 
-The default configuration builds the `aarch64-softmmu` target, which includes Raspberry Pi 4 Model B support (`-machine raspi4b`).
+The default configuration builds the `aarch64-softmmu` and `x86_64-softmmu` targets. The AArch64 target includes Raspberry Pi 4 Model B support (`-machine raspi4b`).
 
 ## Usage
 
@@ -13,7 +13,7 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
 
       - name: Setup QEMU latest
         id: qemu
@@ -34,14 +34,13 @@ Pin the action to a commit SHA for immutable builds:
 | Input | Default | Description |
 | --- | --- | --- |
 | `qemu-version` | `11.1.1` | QEMU release to download from `download.qemu.org` and build. |
-| `allow-downgrade` | `false` | Allow replacing an installed newer QEMU with `qemu-version`. |
-| `qemu-targets` | `aarch64-softmmu` | Comma-separated targets passed to `--target-list`. |
+| `allow-downgrade` | `false` | Build `qemu-version` instead of keeping a newer preinstalled QEMU. An exact version match is always kept. |
+| `qemu-targets` | `aarch64-softmmu,x86_64-softmmu` | Comma-separated targets passed to `--target-list`. |
 | `install-prefix` | `/opt/qemu` | Base installation directory. The QEMU version is appended. |
 | `configure-args` | Empty | Newline-delimited arguments appended to `./configure`; each non-empty line is one argument. |
 | `extra-build-deps` | Empty | Additional space-separated apt packages required by custom configurations. |
 | `nproc` | Automatic | Number of parallel `make` jobs. Empty uses the runner CPU count. |
 | `validation-target` | `aarch64` | Target validated with `-machine help`. Empty disables validation. |
-| `kvm-mode` | `0660` | Four-digit octal access mode for the `/dev/kvm` device udev rule. |
 
 For example, build multiple targets with a custom configure option:
 
@@ -54,10 +53,9 @@ For example, build multiple targets with a custom configure option:
       --enable-slirp
       --extra-cflags=-O2 -g
     nproc: "4"
-    kvm-mode: "0660"
 ```
 
-  To replace a newer installed QEMU with the requested version, set `allow-downgrade: "true"`.
+To replace a newer installed QEMU with the requested version, set `allow-downgrade: "true"`.
 
 ## Outputs
 
@@ -78,11 +76,11 @@ The action adds `bin-path` to `PATH` for subsequent steps in the same job. Outpu
 
 ## Behavior
 
-- On a cache miss, apt-installed `qemu-system*` and `qemu-utils` packages are retained when the first configured system target reports a QEMU version equal to or newer than `qemu-version`. When `allow-downgrade` is `true`, only an equal version is retained.
+- On a cache miss, an exact preinstalled QEMU version match is always kept. A newer preinstalled version is kept unless `allow-downgrade` is `true`; an older, missing, or unrecognized version is replaced with a source build of `qemu-version`.
 - QEMU source archives are verified with the published detached GPG signature before extraction.
-- Builds are cached by runner OS, QEMU version, targets, configure arguments, and extra build dependencies.
+- Builds are cached by runner OS, QEMU version, installation prefix, targets, configure arguments, and extra build dependencies.
 - On a cache miss, build dependencies remain installed for the rest of the job so later build or test steps can use them.
-- KVM device permissions are configured for the runner.
+- After QEMU setup and validation, if `/dev/kvm` exists its mode is set to `0666` so subsequent steps can access KVM.
 
 ## Requirements
 

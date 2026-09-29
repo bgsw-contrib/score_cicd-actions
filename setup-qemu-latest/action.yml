@@ -20,13 +20,13 @@ inputs:
     required: false
     default: "11.1.1"
   allow-downgrade:
-    description: Allow replacing an installed newer QEMU with qemu-version.
+    description: Build qemu-version instead of keeping a newer preinstalled QEMU.
     required: false
     default: "false"
   qemu-targets:
     description: Comma-separated list passed to QEMU's --target-list configure option.
     required: false
-    default: "aarch64-softmmu"
+    default: "aarch64-softmmu,x86_64-softmmu"
   install-prefix:
     description: Base directory QEMU is installed under; the version is appended.
     required: false
@@ -47,10 +47,6 @@ inputs:
     description: QEMU target to validate with -machine help (e.g., aarch64);  empty disables validation.
     required: false
     default: "aarch64"
-  kvm-mode:
-    description: Access mode for the /dev/kvm device udev rule.
-    required: false
-    default: "0660"
 
 outputs:
   install-prefix:
@@ -143,14 +139,22 @@ runs:
           installed_version="$(awk '$1 == "QEMU" && $2 == "emulator" && $3 == "version" { print $4; exit }' <<< "$version_output")"
         fi
 
-        if [[ -n "$installed_version" ]] \
-          && dpkg --compare-versions "$installed_version" ge "$QEMU_VERSION" \
-          && { [[ "$ALLOW_DOWNGRADE" != "true" ]] || dpkg --compare-versions "$installed_version" eq "$QEMU_VERSION"; }; then
-          echo "Keeping $qemu_binary $installed_version (requested: $QEMU_VERSION)."
+        keep_system=false
+        if [[ -n "$installed_version" ]]; then
+          if dpkg --compare-versions "$installed_version" eq "$QEMU_VERSION"; then
+            keep_system=true
+          elif dpkg --compare-versions "$installed_version" gt "$QEMU_VERSION" \
+            && [[ "$ALLOW_DOWNGRADE" != "true" ]]; then
+            keep_system=true
+          fi
+        fi
+
+        if [[ "$keep_system" == "true" ]]; then
+          echo "Keeping preinstalled $qemu_binary $installed_version (requested: $QEMU_VERSION)."
           echo "use-system=true" >> "$GITHUB_OUTPUT"
           echo "bin-path=$(dirname "$(command -v "$qemu_binary")")" >> "$GITHUB_OUTPUT"
         else
-          echo "Removing apt-installed QEMU; ${qemu_binary} version '${installed_version:-not installed}' does not satisfy the requested installation policy."
+          echo "Building QEMU $QEMU_VERSION; preinstalled ${qemu_binary} version '${installed_version:-not installed}' is not selected by the version policy."
           sudo apt-get remove -y --purge 'qemu-system*' 'qemu-utils' || true
           echo "use-system=false" >> "$GITHUB_OUTPUT"
           echo "bin-path=$BUILT_BIN_PATH" >> "$GITHUB_OUTPUT"
@@ -235,11 +239,6 @@ runs:
         path: ${{ steps.vars.outputs.install-prefix }}
         key: ${{ steps.vars.outputs.cache-key }}
 
-    - name: Add QEMU to PATH
-      if: steps.qemu-policy.outputs.use-system != 'true'
-      shell: bash
-      run: echo "${{ steps.qemu-policy.outputs.bin-path }}" >> "$GITHUB_PATH"
-
     - name: Validate the installation
       if: inputs.validation-target != ''
       shell: bash
@@ -267,20 +266,15 @@ runs:
 
         "$BIN_PATH/qemu-system-${validation_target}" -machine help
 
-    - name: Enable KVM group permissions
+    - name: Add QEMU to PATH
+      if: steps.qemu-policy.outputs.use-system != 'true'
       shell: bash
-      env:
-        KVM_MODE: ${{ inputs.kvm-mode }}
+      run: echo "${{ steps.qemu-policy.outputs.bin-path }}" >> "$GITHUB_PATH"
+
+    - name: Enable KVM access
+      shell: bash
       run: |
-        if [[ ! "$KVM_MODE" =~ ^[0-7]{4}$ ]]; then
-          echo "Invalid kvm-mode value: '$KVM_MODE'. Expected a four-digit octal mode." >&2
-          exit 1
-        fi
-        echo "KERNEL==\"kvm\", GROUP=\"kvm\", MODE=\"$KVM_MODE\", OPTIONS+=\"static_node=kvm\"" | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-        sudo udevadm control --reload-rules
-        sudo udevadm trigger --name-match=kvm
-        # Group membership changes don't apply to the current session, so chown
-        # directly to guarantee access without requiring a new login.
+        set -euo pipefail
         if [[ -e /dev/kvm ]]; then
-          sudo chown "$(id -u)":kvm /dev/kvm
+          sudo chmod 666 /dev/kvm
         fi
