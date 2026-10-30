@@ -11,7 +11,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // *******************************************************************************
 
-import { spawn } from 'node:child_process';
+import { createReadStream } from 'node:fs';
+import { Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createZstdDecompress } from 'node:zlib';
 
 const EXECUTION_LOG_METRIC_NOTE =
   'This view counts work that can reuse a cached result; it does not represent every Bazel cache lookup.';
@@ -29,42 +32,33 @@ async function summarizeExecutionLog(logPath) {
   const parser = new CompactExecutionLogParser();
   let decoderError = null;
 
-  await new Promise((resolve) => {
-    const decoder = spawn('zstd', ['--decompress', '--stdout', '--quiet', logPath], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let settled = false;
-    const finish = () => {
-      if (settled) return;
-      settled = true;
-      resolve();
-    };
+  try {
+    await pipeline(
+      createReadStream(logPath),
+      createZstdDecompress(),
+      new Writable({
+        write(chunk, encoding, callback) {
+          try {
+            parser.push(chunk);
+            callback();
+          } catch (error) {
+            callback(error);
+          }
+        },
+      }),
+    );
+    parser.finish();
+  } catch (error) {
+    // Reporting is optional: preserve complete records already parsed even
+    // when reading, decompression, or a later protobuf record fails.
+    decoderError = error;
+  }
 
-    decoder.on('error', (error) => {
-      decoderError = error;
-      finish();
-    });
-    decoder.stdout.on('data', (chunk) => {
-      try {
-        parser.push(chunk);
-      } catch (error) {
-        parser.markPartial(error);
-        decoder.kill();
-      }
-    });
-    decoder.on('close', (code, signal) => {
-      if (code !== 0 || signal) {
-        decoderError = new Error(
-          `zstd exited with ${signal ? `signal ${signal}` : `status ${code}`}`,
-        );
-      }
-      finish();
-    });
-  });
-
-  parser.finish();
   return {
     ...summarizeSpawns(parser.spawns),
+    // A failed decoder with no readable records is unavailable, rather than
+    // evidence that Bazel observed zero cacheable actions.
+    available: !decoderError || parser.spawns.length > 0,
     partial: parser.partial || Boolean(decoderError),
     decoderError,
   };
@@ -228,13 +222,11 @@ class CompactExecutionLogParser {
     }
   }
 
-  markPartial(error) {
-    this.partial = true;
-    this.error = error;
-  }
-
   finish() {
-    if (this.buffer.length > 0) this.partial = true;
+    if (this.buffer.length > 0) {
+      this.partial = true;
+      throw new Error('truncated execution-log protobuf entry at EOF');
+    }
   }
 }
 
