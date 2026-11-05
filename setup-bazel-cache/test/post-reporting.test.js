@@ -47,7 +47,9 @@ function runPost(
     encoding: 'utf8',
     timeout: 15000,
     env: {
-      ...process.env,
+      // Commit hooks export Git paths that must not redirect fixture lookups
+      // into the repository running this test.
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
       RUNNER_TEMP: root,
       GITHUB_STEP_SUMMARY: summaryPath,
       'STATE_setup-bazel-cache-configuration': JSON.stringify(state),
@@ -393,4 +395,27 @@ test('summary write failures do not stop post-step processing', (context) => {
 test('failed-job post condition retains the cache-save gate', () => {
   const manifest = fs.readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
   assert.match(manifest, /post-if: success\(\) \|\| \(failure\(\) && env.SETUP_BAZEL_CACHE_ADDITIVE_SAVE == 'true'\)/);
+});
+
+test('post-step disk cache identity remains caller-controlled for a nested workspace', (context) => {
+  const root = fixture(context);
+  const state = {
+    cacheSaveAllowed: true,
+    diskCacheKey: 'nested-build',
+    workspace: path.join(root, 'nested'),
+    workspaceDirectory: 'nested',
+    bazeliskVersion: '8.8.2',
+    saves: { bazelisk: false, disk: false, repository: false, external: false },
+  };
+  // No cache services are contacted. Even disabled save rows identify their
+  // family. A saved nested workspace must not add a hidden namespace to the
+  // caller's disk key, even if the working-directory input changes later.
+  const { output } = runPost(root, false, 'false', undefined, state, {
+    HOME: root,
+    'INPUT_WORKING-DIRECTORY': 'some-other-workspace',
+  });
+  assert.match(output, /setup-bazel-cache\/linux-[^/]+\/disk\/key-nested-build/);
+  assert.doesNotMatch(output, /workspace-[a-f0-9]{16}\/disk/);
+  assert.match(output, /setup-bazel-cache\/linux-[^/]+\/repository/);
+  assert.doesNotMatch(output, /::warning::|::error::/);
 });

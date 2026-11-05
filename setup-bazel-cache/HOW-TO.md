@@ -5,6 +5,47 @@ job setup, start with the [README](./README.md). For the full input contract,
 see the [reference](./REFERENCE.md); for cache behavior, see the
 [explanation](./EXPLANATION.md).
 
+## Build a nested module in its own job
+
+If a job builds a nested Bazel module, set `working-directory` to that module's
+directory on both cache setup and the Bazel run step. Start with a disk-cache key
+that is unique to this job and stays the same between runs.
+
+For a module in `examples/integration`, use the following job. As with the basic
+setup, Bazel or Bazelisk must be available on `PATH` before the action runs.
+
+```yaml
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@<sha>
+
+      - uses: eclipse-score/cicd-actions/setup-bazel-cache@<sha>
+        with:
+          disk-cache-key: integration-linux
+          working-directory: examples/integration
+
+      - run: bazel test //...
+        working-directory: examples/integration
+```
+
+To adapt this example:
+
+1. Replace `examples/integration` in both places with your module's directory.
+2. Replace `integration-linux` with a stable name for this job's disk cache.
+3. Replace `bazel test //...` with your build or test command.
+
+Run setup once per job. If your job builds several modules, select the main
+module for setup, then set each build step's directory as needed. Leave setup's
+`working-directory` at its default `.` when selecting the root module. You do
+not need a separate job for each module.
+
+To deliberately share build results with another job, use the same
+`disk-cache-key` in both jobs. Otherwise keep separate keys; dependency downloads
+can still be shared. For the benefits and tradeoffs, see
+[caching root and nested modules](./EXPLANATION.md#caching-root-and-nested-modules).
+
 ## Use the action in a build matrix
 
 Give each matrix configuration its own disk-cache key when the configurations

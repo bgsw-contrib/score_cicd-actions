@@ -17,6 +17,31 @@ Cache-saving inputs are still subject to the branch policy. A `true` save
 setting does not allow pull-request refs or tags to publish caches. Restore and
 save settings are independent.
 
+### Workspace selection
+
+#### `working-directory`
+
+Optional. Defaults to `.`. Path to the Bazel workspace directory, relative to
+`GITHUB_WORKSPACE` (the checkout root), for example `examples/integration`.
+The directory must exist inside the checkout, including after resolving symlinks;
+absolute paths and symlinks leading outside the checkout are rejected. Invalid
+selections produce a warning and stop the remaining cache setup.
+
+The selected directory is used for:
+
+- reading `.bazelversion` for the Bazelisk download cache;
+- checking the module lockfile for automatic cache-restore decisions;
+- resolving Bazel's output base and the identity of extracted dependencies;
+- restoring and saving that workspace's extracted dependencies.
+
+The selection is retained for post-job cache saving. It does not change
+`GITHUB_WORKSPACE`, the working directory of later run steps, or disk-cache
+sharing through `disk-cache-key`. Use one setup call per job.
+
+See the [nested-job recipe](./HOW-TO.md#build-a-nested-module-in-its-own-job) for
+configuration and [the comparison](./EXPLANATION.md#caching-root-and-nested-modules)
+for the benefits and limits.
+
 ### Cache identity and save policy
 
 #### `disk-cache-key`
@@ -24,7 +49,11 @@ save settings are independent.
 Required. Use a stable value for runs that should share a disk cache. The value
 must contain 1–400 printable characters and cannot contain commas. Add matrix
 dimensions when those jobs need separate disk caches; avoid per-run values
-such as `github.run_id`. For a matrix example, see
+such as `github.run_id`. The same key shares disk-cache generations across
+working directories on the same platform and architecture. Different keys
+isolate restore and cleanup. Sequential jobs can reuse a previously saved
+generation; parallel jobs do not automatically merge cache additions.
+For a matrix example, see
 [Use the action in a build matrix](./HOW-TO.md#use-the-action-in-a-build-matrix).
 
 #### `cache-save-branch-patterns`

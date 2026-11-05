@@ -30,6 +30,12 @@ of the same reusable workflow.
 
 ## Inputs
 
+### Workspace selection
+
+`working-directory` defaults to `.` (the checkout root). For a nested Bazel module
+built in its own job, set it to that module's directory. See
+[Build a nested module in its own job](./HOW-TO.md#build-a-nested-module-in-its-own-job).
+
 ### Cache identity and publishing
 
 - **`disk-cache-key`**
@@ -161,7 +167,8 @@ interactions.
 
 ## Choose a guide
 
-- [How-to](./HOW-TO.md): use caches in a build matrix, warm a shared
+- [How-to](./HOW-TO.md): build a nested module in its own job, use a build
+  matrix, warm a shared
   repository cache, and allow selected branches to publish.
 - [Reference](./REFERENCE.md): input defaults, accepted values, outputs, and
   permissions.
