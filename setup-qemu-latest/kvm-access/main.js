@@ -31,7 +31,9 @@ function main() {
   }
 
   const user = os.userInfo().username;
-  // Scope access to the current job's user instead of world-writable (0666).
+  const originalAcl = execFileSync('getfacl', ['--absolute-names', KVM_DEVICE], { encoding: 'utf8' });
+  fs.appendFileSync(process.env.GITHUB_STATE,
+    `original-acl=${Buffer.from(originalAcl).toString('base64')}\n`);
   execFileSync('sudo', ['setfacl', '-m', `u:${user}:rw`, KVM_DEVICE], { stdio: 'inherit' });
   console.log(`Granted ${user} rw ACL access to ${KVM_DEVICE}.`);
 }

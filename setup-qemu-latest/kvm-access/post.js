@@ -15,20 +15,22 @@
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
-const os = require('os');
-const { KVM_DEVICE, hasCommand } = require('./common');
+const { KVM_DEVICE } = require('./common');
 
 function main() {
-  if (!fs.existsSync(KVM_DEVICE) || !hasCommand('setfacl')) {
+  const originalAcl = process.env['STATE_original-acl'];
+  if (!originalAcl || !fs.existsSync(KVM_DEVICE)) {
     return;
   }
 
-  const user = os.userInfo().username;
   try {
-    execFileSync('sudo', ['setfacl', '-x', `u:${user}`, KVM_DEVICE], { stdio: 'inherit' });
-    console.log(`Revoked ${user}'s ACL access to ${KVM_DEVICE}.`);
+    execFileSync('sudo', ['setfacl', '--restore=-'], {
+      input: Buffer.from(originalAcl, 'base64').toString('utf8'),
+      stdio: ['pipe', 'inherit', 'inherit'],
+    });
+    console.log(`Restored the original ACL for ${KVM_DEVICE}.`);
   } catch (error) {
-    console.log(`::warning::Failed to revoke KVM ACL access for ${user}: ${error.message}`);
+    console.log(`::warning::Failed to restore the original KVM ACL: ${error.message}`);
   }
 }
 

@@ -1,7 +1,7 @@
 {
   "name": "kvm-access",
   "version": "1.0.0",
-  "description": "Grant and revoke scoped /dev/kvm ACL access for a job",
+  "description": "Grant scoped /dev/kvm ACL access and restore the original ACL after a job",
   "private": true,
   "engines": {
     "node": ">=24"

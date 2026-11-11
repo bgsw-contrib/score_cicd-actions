@@ -18,7 +18,7 @@ inputs:
   qemu-version:
     description: QEMU release version to build from source; must match X.Y.Z (digits and dots only).
     required: false
-    default: "11.1.1"
+    default: "11.1.3"
   allow-downgrade:
     description: Build qemu-version instead of keeping a newer preinstalled QEMU.
     required: false
@@ -28,7 +28,7 @@ inputs:
     required: false
     default: "aarch64-softmmu,x86_64-softmmu"
   install-prefix:
-    description: Base directory QEMU is installed under; the version is appended.
+    description: Base directory QEMU is installed under; relative paths resolve against the workspace, and the version is appended.
     required: false
     default: "/opt/qemu"
   configure-args:
@@ -48,7 +48,7 @@ inputs:
     required: false
     default: "aarch64"
   enable-kvm-access:
-    description: Grant the job's runner user ACL read/write access to /dev/kvm for hardware-accelerated execution; access is revoked again after the job. Leave disabled unless KVM acceleration is required.
+    description: Grant the job's runner user ACL read/write access to /dev/kvm for hardware-accelerated execution; the original ACL is restored after the job. Leave disabled unless KVM acceleration is required.
     required: false
     default: "false"
 
@@ -85,23 +85,32 @@ runs:
           exit 1
         fi
 
-        install_prefix="$INSTALL_PREFIX_BASE/$QEMU_VERSION"
+        if [[ -z "$INSTALL_PREFIX_BASE" ]]; then
+          echo "install-prefix must not be empty." >&2
+          exit 1
+        fi
+        if [[ "$INSTALL_PREFIX_BASE" != /* ]]; then
+          INSTALL_PREFIX_BASE="$GITHUB_WORKSPACE/$INSTALL_PREFIX_BASE"
+        fi
+        install_base="$(realpath -m -- "$INSTALL_PREFIX_BASE")"
+        install_prefix="$install_base/$QEMU_VERSION"
         prefix_hash="$(printf '%s' "$install_prefix" | sha256sum | cut -d' ' -f1)"
         config_hash="$(printf '%s' "$QEMU_TARGETS|$CONFIGURE_ARGS|$EXTRA_BUILD_DEPS" | sha256sum | cut -d' ' -f1)"
         platform_hash="$( { uname -m; cat /etc/os-release; } | sha256sum | cut -d' ' -f1)"
         cache_key="qemu-${{ runner.os }}-${platform_hash}-$QEMU_VERSION-${prefix_hash}-${config_hash}"
 
+        echo "install-base=$install_base" >> "$GITHUB_OUTPUT"
         echo "install-prefix=$install_prefix" >> "$GITHUB_OUTPUT"
         echo "cache-key=$cache_key" >> "$GITHUB_OUTPUT"
         echo "bin-path=$install_prefix/bin" >> "$GITHUB_OUTPUT"
 
-    - name: Prepare QEMU install prefix
+    - name: Prepare QEMU install base
       shell: bash
       env:
-        INSTALL_PREFIX: ${{ steps.vars.outputs.install-prefix }}
+        INSTALL_PREFIX_BASE: ${{ steps.vars.outputs.install-base }}
       run: |
         set -euo pipefail
-        sudo install -d -o "$(id -u)" -g "$(id -g)" "$INSTALL_PREFIX"
+        sudo install -d -o "$(id -u)" -g "$(id -g)" "$INSTALL_PREFIX_BASE"
 
     - name: Install QEMU runtime dependencies
       shell: bash
@@ -137,40 +146,48 @@ runs:
           exit 0
         fi
 
-        qemu_target=""
+        keep_system=true
+        system_bin_path=""
         IFS=',' read -ra qemu_targets <<< "$QEMU_TARGETS"
         for target in "${qemu_targets[@]}"; do
           target="${target//[[:space:]]/}"
-          if [[ "$target" == *-softmmu ]]; then
-            qemu_target="${target%-softmmu}"
+          [[ "$target" == *-softmmu ]] || continue
+          qemu_binary="qemu-system-${target%-softmmu}"
+          binary_path="$(command -v "$qemu_binary" 2>/dev/null || true)"
+          if [[ -z "$binary_path" ]]; then
+            keep_system=false
             break
           fi
-        done
-        qemu_binary="qemu-system-${qemu_target}"
-        installed_version=""
-
-        if command -v "$qemu_binary" >/dev/null; then
-          version_output="$($qemu_binary --version 2>/dev/null || true)"
+          version_output="$("$binary_path" --version 2>/dev/null || true)"
           installed_version="$(awk '$1 == "QEMU" && $2 == "emulator" && $3 == "version" { print $4; exit }' <<< "$version_output")"
-        fi
-
-        keep_system=false
-        if [[ -n "$installed_version" ]]; then
-          if dpkg --compare-versions "$installed_version" eq "$QEMU_VERSION"; then
-            keep_system=true
-          elif dpkg --compare-versions "$installed_version" gt "$QEMU_VERSION" \
-            && [[ "$ALLOW_DOWNGRADE" != "true" ]]; then
-            keep_system=true
+          if [[ ! "$installed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+~.-].*)?$ ]]; then
+            keep_system=false
+            break
           fi
+          if ! dpkg --compare-versions "$installed_version" eq "$QEMU_VERSION"; then
+            if [[ "$ALLOW_DOWNGRADE" == "true" ]] || ! dpkg --compare-versions "$installed_version" gt "$QEMU_VERSION"; then
+              keep_system=false
+              break
+            fi
+          fi
+          binary_dir="$(dirname "$binary_path")"
+          if [[ -n "$system_bin_path" && "$system_bin_path" != "$binary_dir" ]]; then
+            keep_system=false
+            break
+          fi
+          system_bin_path="$binary_dir"
+        done
+        if [[ -z "$system_bin_path" ]]; then
+          keep_system=false
         fi
 
         if [[ "$keep_system" == "true" ]]; then
-          echo "Keeping preinstalled $qemu_binary $installed_version (requested: $QEMU_VERSION)."
+          echo "Keeping preinstalled QEMU targets in $system_bin_path (requested: $QEMU_VERSION)."
           echo "use-system=true" >> "$GITHUB_OUTPUT"
           echo "install-prefix=" >> "$GITHUB_OUTPUT"
-          echo "bin-path=$(dirname "$(command -v "$qemu_binary")")" >> "$GITHUB_OUTPUT"
+          echo "bin-path=$system_bin_path" >> "$GITHUB_OUTPUT"
         else
-          echo "Building QEMU $QEMU_VERSION; preinstalled ${qemu_binary} version '${installed_version:-not installed}' is not selected by the version policy."
+          echo "Building QEMU $QEMU_VERSION; not all requested targets satisfy the preinstalled version policy."
 
           packages_to_remove=()
           for target in "${qemu_targets[@]}"; do
@@ -178,12 +195,9 @@ runs:
             [[ "$target" == *-softmmu ]] || continue
             binary_path="$(command -v "qemu-system-${target%-softmmu}" 2>/dev/null || true)"
             [[ -z "$binary_path" ]] && continue
-            owning_package="$(dpkg -S "$binary_path" 2>/dev/null | cut -d: -f1)"
+            owning_package="$(dpkg -S "$binary_path" 2>/dev/null | cut -d: -f1 || true)"
             [[ -n "$owning_package" ]] && packages_to_remove+=("$owning_package")
           done
-          if dpkg -s qemu-utils >/dev/null 2>&1; then
-            packages_to_remove+=("qemu-utils")
-          fi
           if [[ "${#packages_to_remove[@]}" -gt 0 ]]; then
             mapfile -t packages_to_remove < <(printf '%s\n' "${packages_to_remove[@]}" | sort -u)
             echo "Removing packages that own the QEMU binaries being replaced: ${packages_to_remove[*]}"
@@ -194,6 +208,15 @@ runs:
           echo "install-prefix=$BUILT_INSTALL_PREFIX" >> "$GITHUB_OUTPUT"
           echo "bin-path=$BUILT_BIN_PATH" >> "$GITHUB_OUTPUT"
         fi
+
+    - name: Prepare QEMU source build install prefix
+      if: steps.qemu-policy.outputs.use-system != 'true' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        INSTALL_PREFIX: ${{ steps.vars.outputs.install-prefix }}
+      run: |
+        set -euo pipefail
+        install -d "$INSTALL_PREFIX"
 
     - name: Install build dependencies
       if: steps.qemu-policy.outputs.use-system != 'true' && steps.cache.outputs.cache-hit != 'true'
@@ -306,6 +329,23 @@ runs:
       shell: bash
       run: echo "${{ steps.qemu-policy.outputs.bin-path }}" >> "$GITHUB_PATH"
 
+    - name: Locate KVM access helper
+      if: inputs.enable-kvm-access == 'true'
+      shell: bash
+      env:
+        KVM_ACTION_PATH: ${{ github.action_path }}/kvm-access
+      run: |
+        set -euo pipefail
+        helper_path="$GITHUB_WORKSPACE/.setup-qemu-latest-kvm-access"
+        if [[ -L "$helper_path" && "$(readlink "$helper_path")" == "$KVM_ACTION_PATH" ]]; then
+          exit 0
+        fi
+        if [[ -e "$helper_path" || -L "$helper_path" ]]; then
+          echo "KVM helper path '$helper_path' already exists and is not owned by this action." >&2
+          exit 1
+        fi
+        ln -sT "$KVM_ACTION_PATH" "$helper_path"
+
     - name: Enable KVM access
       if: inputs.enable-kvm-access == 'true'
-      uses: ./setup-qemu-latest/kvm-access
+      uses: ./.setup-qemu-latest-kvm-access

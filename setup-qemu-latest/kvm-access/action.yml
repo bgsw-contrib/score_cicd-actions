@@ -12,7 +12,7 @@
 # *******************************************************************************
 
 name: Enable KVM access
-description: Grant the running job's user ACL read/write access to /dev/kvm, and revoke it again after the job.
+description: Grant the running job's user ACL read/write access to /dev/kvm, and restore the original ACL after the job.
 
 runs:
   using: node24
