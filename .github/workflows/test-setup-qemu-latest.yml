@@ -107,6 +107,9 @@ jobs:
             echo "KVM device not available on this runner; skipping permission check."
           fi
 
+      - name: Check out at workspace root before KVM cleanup
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
   cache-miss-then-hit:
     name: Exercise cache miss and cache hit
     runs-on: ubuntu-latest
@@ -121,7 +124,9 @@ jobs:
           qemu-targets: x86_64-softmmu
           validation-target: x86_64
           nproc: "2"
+          extra-build-deps: libslirp-dev
           configure-args: |
+            --enable-slirp
             --extra-cflags=-DTEST_RUN_${{ github.run_id }}_${{ github.run_attempt }}_CACHE
 
       - name: Verify first invocation missed the cache
@@ -129,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${{ steps.setup-qemu-1.outputs.cache-hit }}" == "true" ]]; then
+          if [[ "${{ steps.setup-qemu-1.outputs.cache-hit }}" != "false" ]]; then
             echo "ERROR: expected a cache miss on the first invocation of this isolated test"
             exit 1
           fi
@@ -151,6 +156,9 @@ jobs:
           fi
           rm -rf -- "$INSTALL_PREFIX"
 
+      - name: Remove custom feature dependencies before cache restore
+        run: sudo apt-get remove -y libslirp-dev libslirp0
+
       - name: Run setup-qemu-latest action (expect cache hit)
         id: setup-qemu-2
         uses: ./setup-qemu-latest
@@ -158,7 +166,9 @@ jobs:
           qemu-targets: x86_64-softmmu
           validation-target: x86_64
           nproc: "2"
+          extra-build-deps: libslirp-dev
           configure-args: |
+            --enable-slirp
             --extra-cflags=-DTEST_RUN_${{ github.run_id }}_${{ github.run_attempt }}_CACHE
 
       - name: Verify second invocation hit the cache

@@ -36,7 +36,7 @@ inputs:
     required: false
     default: ""
   extra-build-deps:
-    description: Extra space-separated apt packages appended to the build dependencies.
+    description: Extra space-separated apt packages for custom features; also installed on cache hits to provision their runtime libraries.
     required: false
     default: ""
   nproc:
@@ -61,7 +61,7 @@ outputs:
     value: ${{ steps.vars.outputs.cache-key }}
   cache-hit:
     description: Whether the QEMU build cache was restored ("true") or missed ("false").
-    value: ${{ steps.cache.outputs.cache-hit }}
+    value: ${{ steps.cache.outputs.cache-hit || 'false' }}
   bin-path:
     description: Path to the QEMU bin directory.
     value: ${{ steps.qemu-policy.outputs.bin-path }}
@@ -118,10 +118,19 @@ runs:
 
     - name: Install QEMU runtime dependencies
       shell: bash
+      env:
+        EXTRA_BUILD_DEPS: ${{ inputs.extra-build-deps }}
       run: |
         set -euo pipefail
+        read -ra extra_build_deps <<< "$EXTRA_BUILD_DEPS"
         sudo apt-get update
-        sudo apt-get install -y libfdt1
+        glib_package=libglib2.0-0
+        if apt-cache show libglib2.0-0t64 > /dev/null 2>&1; then
+          glib_package=libglib2.0-0t64
+        fi
+        sudo apt-get install -y \
+          libfdt1 "$glib_package" libpixman-1-0 zlib1g libstdc++6 libgcc-s1 \
+          "${extra_build_deps[@]}"
 
     - name: Restore or save QEMU build cache
       id: cache
@@ -166,7 +175,10 @@ runs:
             break
           fi
           version_output="$("$binary_path" --version 2>/dev/null || true)"
-          installed_version="$(awk '$1 == "QEMU" && $2 == "emulator" && $3 == "version" { print $4; exit }' <<< "$version_output")"
+          installed_version="$(awk -v binary="$qemu_binary" '
+            $1 == "QEMU" && $2 == "emulator" && $3 == "version" { print $4; exit }
+            $1 == binary && $2 == "version" { print $3; exit }
+          ' <<< "$version_output")"
           if [[ ! "$installed_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+~.-].*)?$ ]]; then
             keep_system=false
             break
@@ -232,15 +244,11 @@ runs:
     - name: Install build dependencies
       if: steps.qemu-policy.outputs.use-system != 'true' && steps.cache.outputs.cache-hit != 'true'
       shell: bash
-      env:
-        EXTRA_BUILD_DEPS: ${{ inputs.extra-build-deps }}
       run: |
         set -euo pipefail
-        read -ra extra_build_deps <<< "$EXTRA_BUILD_DEPS"
         sudo apt-get install -y \
           ninja-build build-essential libglib2.0-dev libpixman-1-dev \
-          libfdt-dev zlib1g-dev flex bison pkg-config python3 python3-venv gnupg \
-          "${extra_build_deps[@]}"
+          libfdt-dev zlib1g-dev flex bison pkg-config python3 python3-venv gnupg
 
     - name: Prepare isolated QEMU source directory
       id: qemu-source
@@ -352,23 +360,6 @@ runs:
         BIN_PATH: ${{ steps.qemu-policy.outputs.bin-path }}
       run: printf '%s\n' "$BIN_PATH" >> "$GITHUB_PATH"
 
-    - name: Locate KVM access helper
-      if: inputs.enable-kvm-access == 'true'
-      shell: bash
-      env:
-        KVM_ACTION_PATH: ${{ github.action_path }}/kvm-access
-      run: |
-        set -euo pipefail
-        helper_path="$GITHUB_WORKSPACE/.setup-qemu-latest-kvm-access"
-        if [[ -L "$helper_path" && "$(readlink "$helper_path")" == "$KVM_ACTION_PATH" ]]; then
-          exit 0
-        fi
-        if [[ -e "$helper_path" || -L "$helper_path" ]]; then
-          echo "KVM helper path '$helper_path' already exists and is not owned by this action." >&2
-          exit 1
-        fi
-        ln -sT "$KVM_ACTION_PATH" "$helper_path"
-
     - name: Enable KVM access
       if: inputs.enable-kvm-access == 'true'
-      uses: ./.setup-qemu-latest-kvm-access
+      uses: eclipse-score/cicd-actions/setup-qemu-latest/kvm-access@a3558b6f8498ee5417a97f3d0fa601ccde8f78c3

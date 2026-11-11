@@ -67,6 +67,9 @@ for (const scenario of [
   { name: 'exact versions are kept', versions: ['11.1.3', '11.1.3'], keep: true },
   { name: 'newer versions are kept', versions: ['99.0.0', '99.0.0'], keep: true },
   { name: 'matching linux-user targets are kept', versions: ['11.1.3', '11.1.3'], targetKind: 'linux-user', keep: true },
+  { name: 'newer linux-user targets are kept', versions: ['99.0.0', '99.0.0'], targetKind: 'linux-user', keep: true },
+  { name: 'older linux-user target selects a build', versions: ['11.1.3', '1.0.0'], targetKind: 'linux-user', keep: false },
+  { name: 'linux-user forced downgrade selects a build', versions: ['99.0.0', '99.0.0'], targetKind: 'linux-user', downgrade: 'true', keep: false },
   { name: 'forced downgrade handles unowned binaries', versions: ['99.0.0', '99.0.0'], downgrade: 'true', keep: false },
   { name: 'missing second target selects a build', versions: ['11.1.3', null], keep: false },
   { name: 'missing linux-user target selects a build', versions: ['11.1.3', null], targetKind: 'linux-user', keep: false },
@@ -84,8 +87,9 @@ for (const scenario of [
       targets.forEach((target, index) => {
         if (scenario.versions[index] === null) return;
         const executable = scenario.targetKind === 'linux-user' ? `qemu-${target}` : `qemu-system-${target}`;
+        const banner = scenario.targetKind === 'linux-user' ? executable : 'QEMU emulator';
         fs.writeFileSync(path.join(bin, executable),
-          `#!/bin/sh\necho 'QEMU emulator version ${scenario.versions[index]}'\n`, { mode: 0o755 });
+          `#!/bin/sh\necho '${banner} version ${scenario.versions[index]}'\n`, { mode: 0o755 });
       });
       const output = path.join(temporary, 'output');
       const result = spawnSync('bash', ['-c', `
@@ -122,6 +126,47 @@ for (const scenario of [
     }
   });
 }
+
+for (const glibPackage of ['libglib2.0-0', 'libglib2.0-0t64']) {
+  test(`runtime provisioning installs default and custom libraries with ${glibPackage} on cache hits`, () => {
+    const runtime = action.runs.steps.find(step => step.name === 'Install QEMU runtime dependencies');
+    assert.equal(runtime.if, undefined);
+    assert(action.runs.steps.indexOf(runtime) < action.runs.steps.findIndex(step => step.id === 'cache'));
+    assert.equal(runtime.env.EXTRA_BUILD_DEPS, '${{ inputs.extra-build-deps }}');
+    const result = spawnSync('bash', ['-c', `
+      apt-cache() { [[ "$GLIB_PACKAGE" == 'libglib2.0-0t64' ]]; }
+      sudo() { printf '%s\\n' "$@"; }
+      ${runtime.run}
+    `], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GLIB_PACKAGE: glibPackage,
+        EXTRA_BUILD_DEPS: 'libslirp-dev libaio-dev',
+        CACHE_HIT: 'true',
+      },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split('\n'), [
+      'apt-get', 'update', 'apt-get', 'install', '-y',
+      'libfdt1', glibPackage, 'libpixman-1-0', 'zlib1g', 'libstdc++6', 'libgcc-s1',
+      'libslirp-dev', 'libaio-dev',
+    ]);
+  });
+}
+
+test('runtime dependency installation errors fail setup rather than using an incomplete cache', () => {
+  const runtime = action.runs.steps.find(step => step.name === 'Install QEMU runtime dependencies');
+  const result = spawnSync('bash', ['-c', `
+    apt-cache() { return 1; }
+    sudo() { [[ "$2" == 'update' ]] || return 42; }
+    ${runtime.run}
+  `], {
+    encoding: 'utf8',
+    env: { ...process.env, EXTRA_BUILD_DEPS: '' },
+  });
+  assert.equal(result.status, 42);
+});
 
 test('source extraction and cleanup stay in runner temp and preserve a caller directory', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qemu-source-dir-test-'));
@@ -245,43 +290,13 @@ test('source build leaves qemu-utils installed when no requested binary owns it'
   }
 });
 
-test('KVM helper resolves from the action outside the caller workspace', () => {
-  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qemu-consumer-test-'));
-  try {
-    const workspace = path.join(temporary, 'consumer');
-    fs.mkdirSync(workspace);
-    const locate = action.runs.steps.find(step => step.name === 'Locate KVM access helper');
-    const enable = action.runs.steps.find(step => step.name === 'Enable KVM access');
-    assert.equal(locate.env.KVM_ACTION_PATH, '${{ github.action_path }}/kvm-access');
-    const helperSource = path.resolve(__dirname, '../kvm-access');
-    const run = () => spawnSync('bash', ['-c', locate.run], {
-      cwd: workspace,
-      env: { ...process.env, GITHUB_WORKSPACE: workspace, KVM_ACTION_PATH: helperSource },
-      encoding: 'utf8',
-    });
-    assert.equal(run().status, 0);
-    assert.equal(run().status, 0);
-    const helperPath = path.resolve(workspace, enable.uses);
-    assert.equal(fs.realpathSync(helperPath), helperSource);
-    const helper = parse(fs.readFileSync(path.join(helperPath, 'action.yml'), 'utf8'));
-    assert(fs.existsSync(path.join(helperPath, helper.runs.main)));
-    assert(fs.existsSync(path.join(helperPath, helper.runs.post)));
-    fs.unlinkSync(helperPath);
-    fs.mkdirSync(helperPath);
-    const conflict = run();
-    assert.notEqual(conflict.status, 0);
-    assert.match(conflict.stderr, /not owned by this action/);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
-  }
-});
-
 test('workflow isolates caches across jobs and attempts but reuses the cache within a job', () => {
   const workflow = parse(fs.readFileSync(path.join(__dirname, '../../.github/workflows/test-setup-qemu-latest.yml'), 'utf8'));
   const cacheSteps = workflow.jobs['cache-miss-then-hit'].steps;
   const first = cacheSteps.find(step => step.id === 'setup-qemu-1');
   const second = cacheSteps.find(step => step.id === 'setup-qemu-2');
   assert.equal(first.with['configure-args'], second.with['configure-args']);
+  assert.equal(first.with['extra-build-deps'], second.with['extra-build-deps']);
   const removal = cacheSteps.findIndex(step => step.name === 'Remove installation before cache restore');
   assert(removal > cacheSteps.indexOf(first));
   assert(removal < cacheSteps.indexOf(second));
@@ -300,8 +315,10 @@ test('workflow isolates caches across jobs and attempts but reuses the cache wit
     const setup = definition.steps.find(step => step.id === 'setup-qemu' || step.id === 'setup-qemu-1');
     if (!setup?.with['configure-args']) continue;
     const rendered = render(setup.with['configure-args'], 1).trim();
-    assert.match(rendered, /^--extra-cflags=-D[A-Za-z_][A-Za-z0-9_]*$/);
-    configurations.push([job, rendered]);
+    const isolationFlags = rendered.split('\n').filter(line => line.startsWith('--extra-cflags='));
+    assert.equal(isolationFlags.length, 1);
+    assert.match(isolationFlags[0], /^--extra-cflags=-D[A-Za-z_][A-Za-z0-9_]*$/);
+    configurations.push([job, isolationFlags[0]]);
   }
   assert.equal(new Set(configurations.map(([, value]) => value)).size, configurations.length);
   const buildSteps = workflow.jobs['build-from-source'].steps;

@@ -34,7 +34,25 @@ function main() {
   const originalAcl = execFileSync('getfacl', ['--absolute-names', KVM_DEVICE], { encoding: 'utf8' });
   fs.appendFileSync(process.env.GITHUB_STATE,
     `original-acl=${Buffer.from(originalAcl).toString('base64')}\n`);
-  execFileSync('sudo', ['setfacl', '-m', `u:${user}:rw`, KVM_DEVICE], { stdio: 'inherit' });
+  const entries = originalAcl.split('\n')
+    .filter(line => line.trim() && !line.startsWith('#'))
+    .map(line => {
+      const entry = line.match(/^(user|group|mask|other):([^:]*):([r-][w-][x-])(?:\s+#.*)?$/);
+      if (!entry) throw new Error(`Unexpected KVM ACL entry: ${line}`);
+      return { type: entry[1], name: entry[2], permissions: entry[3] };
+    });
+  const mask = entries.find(entry => entry.type === 'mask')?.permissions || 'rwx';
+  // Clip masked entries before widening the mask, so only the runner gains access.
+  const modifications = entries
+    .filter(entry => entry.type === 'group' ||
+      (entry.type === 'user' && entry.name && entry.name !== user))
+    .map(entry => {
+      const effective = Array.from(entry.permissions,
+        (permission, index) => permission === mask[index] ? permission : '-').join('');
+      return `${entry.type}:${entry.name}:${effective}`;
+    });
+  modifications.push(`user:${user}:rw-`, `mask::rw${mask[2]}`);
+  execFileSync('sudo', ['setfacl', '--no-mask', '-m', modifications.join(','), KVM_DEVICE], { stdio: 'inherit' });
   console.log(`Granted ${user} rw ACL access to ${KVM_DEVICE}.`);
 }
 
