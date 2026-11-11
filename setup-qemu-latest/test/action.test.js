@@ -322,7 +322,7 @@ test('workflow isolates caches across jobs and attempts but reuses the cache wit
   }
   assert.equal(new Set(configurations.map(([, value]) => value)).size, configurations.length);
   const buildSteps = workflow.jobs['build-from-source'].steps;
-  assert.equal(buildSteps[0].with.path, 'action-source');
-  assert.equal(buildSteps[1].uses, './action-source/setup-qemu-latest');
+  assert.equal(buildSteps[0].with, undefined);
+  assert.equal(buildSteps[1].uses, './setup-qemu-latest');
   assert.equal(buildSteps[1].with['enable-kvm-access'], 'true');
 });

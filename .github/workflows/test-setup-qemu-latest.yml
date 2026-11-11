@@ -40,12 +40,10 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: action-source
 
       - name: Run setup-qemu-latest action
         id: setup-qemu
-        uses: ./action-source/setup-qemu-latest
+        uses: ./setup-qemu-latest
         with:
           validation-target: aarch64
           nproc: "2"
