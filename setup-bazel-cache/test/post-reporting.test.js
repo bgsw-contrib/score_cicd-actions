@@ -18,6 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { zstdCompressSync } from 'node:zlib';
 import {
   claimInvocation,
   finishInvocation,
@@ -34,6 +35,7 @@ function fixture(context) {
 function runPost(
   root,
   enabled,
+  stepSummaryInput = 'false',
   summaryPath = path.join(root, 'summary.md'),
   state = { cacheSaveAllowed: false, invocationRoot: invocationRootPath(root) },
   extraEnv = {},
@@ -45,13 +47,15 @@ function runPost(
     encoding: 'utf8',
     timeout: 15000,
     env: {
-      ...process.env,
+      // Commit hooks export Git paths that must not redirect fixture lookups
+      // into the repository running this test.
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))),
       RUNNER_TEMP: root,
       GITHUB_STEP_SUMMARY: summaryPath,
       'STATE_setup-bazel-cache-configuration': JSON.stringify(state),
       'INPUT_REPORT-CACHE-HITS': 'true',
       'INPUT_REPORT-TEST-CACHE-HITS': String(enabled),
-      'INPUT_REPORT-CACHE-STEP-SUMMARY': 'true',
+      'INPUT_REPORT-CACHE-STEP-SUMMARY': stepSummaryInput,
       'INPUT_ENABLE-PROFILING': 'false',
       ...extraEnv,
     },
@@ -84,12 +88,80 @@ function compressedExecutionLog() {
     field(14, 0, 1),
   ]);
   const entry = field(7, 2, spawn);
-  return execFileSync('zstd', ['-cq'], { input: Buffer.concat([varint(entry.length), entry]) });
+  return zstdCompressSync(Buffer.concat([varint(entry.length), entry]));
 }
 
 function updateInvocationMetadata(invocation, changes) {
   const metadata = JSON.parse(fs.readFileSync(invocation.metadataPath, 'utf8'));
   fs.writeFileSync(invocation.metadataPath, `${JSON.stringify({ ...metadata, ...changes })}\n`);
+}
+
+test('build and test reporting work without external zstd and continue post processing', (context) => {
+  const root = fixture(context);
+  const invocationRoot = invocationRootPath(root);
+  initializeInvocationStore(invocationRoot);
+  for (let sequence = 0; sequence < 2; sequence += 1) {
+    const invocation = claimInvocation(invocationRoot, 'test', {
+      executionLog: true,
+      testCache: true,
+      profile: false,
+    });
+    fs.writeFileSync(invocation.files.executionLog, compressedExecutionLog());
+    fs.writeFileSync(invocation.files.testCache, [
+      JSON.stringify({ id: { testResult: { label: '//:t' } }, testResult: { cachedLocally: true } }),
+      JSON.stringify({ lastMessage: true }),
+    ].join('\n'));
+    finishInvocation(invocation, 0);
+  }
+
+  // The child runs Node by absolute path; an empty PATH hides only external
+  // tools, simulating a runner/container without zstd installed.
+  const extraEnv = { PATH: root };
+  const { output, summary } = runPost(root, true, 'true', undefined, undefined, extraEnv);
+  assert.doesNotMatch(output, /::warning::|::error::/);
+  assert.match(output, /Bazel 000-test cache: 1 \/ 1 cached \(100%\)/);
+  assert.match(output, /Cache saving is disabled on this ref/);
+  assert.match(summary, /\| Build cache \| 1 \/ 1 \| 100% \| Used \|/);
+  assert.match(summary, /\| Test cache \| 1 \/ 1 \| 100% \| Used \|/);
+
+  const disabled = runPost(root, true, 'false', undefined, undefined, {
+    ...extraEnv,
+    'INPUT_REPORT-CACHE-HITS': 'false',
+  });
+  assert.doesNotMatch(disabled.output, /::warning::|zstd/);
+});
+
+for (const { name, data, diagnostic } of [
+  {
+    name: 'invalid zstd logs',
+    data: Buffer.from('not a zstd stream'),
+    diagnostic: /execution-log analysis failed:/,
+  },
+  {
+    name: 'incomplete protobuf entries in valid zstd frames',
+    data: zstdCompressSync(Buffer.from([0x02, 0x3a])),
+    diagnostic: /truncated execution-log protobuf entry at EOF/,
+  },
+]) {
+  test(`${name} warn and continue post processing`, (context) => {
+    const root = fixture(context);
+    const invocationRoot = invocationRootPath(root);
+    initializeInvocationStore(invocationRoot);
+    const invocation = claimInvocation(invocationRoot, 'build', {
+      executionLog: true,
+      testCache: false,
+      profile: false,
+    });
+    fs.writeFileSync(invocation.files.executionLog, data);
+    finishInvocation(invocation, 0);
+
+    const { output, summary } = runPost(root, false, 'true');
+    assert.match(output, /::warning::Bazel 000-build execution-log analysis failed: .+/);
+    assert.match(output, diagnostic);
+    assert.match(output, /Cache saving is disabled on this ref/);
+    assert.match(summary, /\| Build cache \| — \| n\/a \| Unavailable \|/);
+    assert.doesNotMatch(output, /::error::/);
+  });
 }
 
 test('post omits unavailable data quietly and continues cache-save eligibility checks', (context) => {
@@ -107,12 +179,35 @@ test('disabling the step summary keeps the job log but leaves the step summary e
   const { output, summary } = runPost(
     root,
     true,
-    undefined,
-    undefined,
-    { 'INPUT_REPORT-CACHE-STEP-SUMMARY': 'false' },
+    'false',
   );
   assert.match(output, /Cache saving is disabled on this ref/);
   assert.doesNotMatch(output, /::warning::|::error::/);
+  assert.equal(summary, '');
+});
+
+test('the default keeps cache reports in the job log without writing a step summary', (context) => {
+  const root = fixture(context);
+  const invocationRoot = invocationRootPath(root);
+  initializeInvocationStore(invocationRoot);
+  const invocation = claimInvocation(invocationRoot, 'test', {
+    executionLog: false,
+    testCache: true,
+    profile: false,
+  }, ['//:default-summary-test']);
+  fs.writeFileSync(invocation.files.testCache, [
+    JSON.stringify({ id: { testResult: { label: '//:default-summary-test' } }, testResult: { cachedLocally: true } }),
+    JSON.stringify({ lastMessage: true }),
+  ].join('\n'));
+  finishInvocation(invocation, 0);
+
+  const manifest = fs.readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
+  const stepSummaryInput = manifest
+    .split('  report-cache-step-summary:\n')[1]
+    .split('\n\n  # cache flags:')[0];
+  assert.match(stepSummaryInput, /default: "false"/);
+  const { output, summary } = runPost(root, true);
+  assert.match(output, /000-test: \/\/:default-summary-test/);
   assert.equal(summary, '');
 });
 
@@ -125,7 +220,7 @@ test('test report preserves cache output and renders disabled, partial, and no-a
     testCache: true,
     profile: false,
   });
-  fs.writeFileSync(testInvocation.files.executionLog, execFileSync('zstd', ['-cq'], { input: Buffer.alloc(0) }));
+  fs.writeFileSync(testInvocation.files.executionLog, zstdCompressSync(Buffer.alloc(0)));
   fs.writeFileSync(testInvocation.files.testCache, [
     JSON.stringify({ structuredCommandLine: {
       commandLineLabel: 'canonical',
@@ -156,9 +251,9 @@ test('test report preserves cache output and renders disabled, partial, and no-a
     startedAt: '2026-01-01T00:01:00.000Z',
     finishedAt: '2026-01-01T00:02:48.000Z',
   });
-  const baseline = runPost(root, false);
+  const baseline = runPost(root, false, 'true');
   fs.writeFileSync(path.join(root, 'summary.md'), '');
-  const actual = runPost(root, true, path.join(root, 'summary.md'), {
+  const actual = runPost(root, true, 'true', path.join(root, 'summary.md'), {
     cacheSaveAllowed: false,
     restoreResults: {
       bazelisk: 'true',
@@ -180,7 +275,7 @@ test('test report preserves cache output and renders disabled, partial, and no-a
   assert.doesNotMatch(actual.summary, /Disk cache/);
   assert.doesNotMatch(actual.summary, /\| External cache \|/);
   fs.writeFileSync(path.join(root, 'summary.md'), '');
-  const withExternal = runPost(root, true, path.join(root, 'summary.md'), {
+  const withExternal = runPost(root, true, 'true', path.join(root, 'summary.md'), {
     cacheSaveAllowed: false,
     restoreResults: { external: 'false' },
     externalManifestRestoreResult: 'true',
@@ -238,7 +333,7 @@ test('summary groups repeated invocations with their target patterns', (context)
     });
   }
 
-  const { output, summary } = runPost(root, true);
+  const { output, summary } = runPost(root, true, 'true');
   assert.match(summary, /\| Cache \| Reused \/ total \| Hit rate \| Status \|/);
   for (let sequence = 0; sequence < 3; sequence += 1) {
     const elapsed = ['12\\.4 s', '1\\.8 min', '0\\.4 s'][sequence];
@@ -283,7 +378,7 @@ test('summary uses n/a for incomplete or invalid invocation timestamps', (contex
   finishInvocation(invalidStart, 0);
   updateInvocationMetadata(invalidStart, { startedAt: 'not-a-timestamp' });
 
-  const { summary } = runPost(root, false);
+  const { summary } = runPost(root, false, 'true');
   assert.match(summary, /<h3>build · 000 · n\/a<\/h3>[\s\S]*?\| Build cache \| — \| n\/a \| Unavailable \|/);
   assert.match(summary, /<h3>build · 001 · n\/a<\/h3>[\s\S]*?\| Build cache \| — \| n\/a \| Unavailable \|/);
 });
@@ -291,7 +386,7 @@ test('summary uses n/a for incomplete or invalid invocation timestamps', (contex
 test('summary write failures do not stop post-step processing', (context) => {
   const root = fixture(context);
   // A directory is accessible but cannot receive summary text.
-  const { output } = runPost(root, true, root);
+  const { output } = runPost(root, true, 'true', root);
   assert.match(output, /Bazel cache summary unavailable/);
   assert.match(output, /Cache saving is disabled on this ref/);
   assert.doesNotMatch(output, /::error::/);
@@ -300,4 +395,27 @@ test('summary write failures do not stop post-step processing', (context) => {
 test('failed-job post condition retains the cache-save gate', () => {
   const manifest = fs.readFileSync(new URL('../action.yml', import.meta.url), 'utf8');
   assert.match(manifest, /post-if: success\(\) \|\| \(failure\(\) && env.SETUP_BAZEL_CACHE_ADDITIVE_SAVE == 'true'\)/);
+});
+
+test('post-step disk cache identity remains caller-controlled for a nested workspace', (context) => {
+  const root = fixture(context);
+  const state = {
+    cacheSaveAllowed: true,
+    diskCacheKey: 'nested-build',
+    workspace: path.join(root, 'nested'),
+    workspaceDirectory: 'nested',
+    bazeliskVersion: '8.8.2',
+    saves: { bazelisk: false, disk: false, repository: false, external: false },
+  };
+  // No cache services are contacted. Even disabled save rows identify their
+  // family. A saved nested workspace must not add a hidden namespace to the
+  // caller's disk key, even if the working-directory input changes later.
+  const { output } = runPost(root, false, 'false', undefined, state, {
+    HOME: root,
+    'INPUT_WORKING-DIRECTORY': 'some-other-workspace',
+  });
+  assert.match(output, /setup-bazel-cache\/linux-[^/]+\/disk\/key-nested-build/);
+  assert.doesNotMatch(output, /workspace-[a-f0-9]{16}\/disk/);
+  assert.match(output, /setup-bazel-cache\/linux-[^/]+\/repository/);
+  assert.doesNotMatch(output, /::warning::|::error::/);
 });

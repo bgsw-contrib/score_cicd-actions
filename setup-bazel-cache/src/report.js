@@ -65,6 +65,12 @@ async function logExecutionCacheSummary(root = invocationRootPath()) {
       report = fs.existsSync(logPath)
         ? await summarizeExecutionLog(logPath)
         : unavailableExecutionReport();
+      if (report.decoderError) {
+        core.warning(
+          `Bazel ${invocationLabel(invocation)} execution-log analysis failed: ` +
+          `${report.decoderError.message}. Only readable records are reported; cache processing will continue.`,
+        );
+      }
     } catch (error) {
       core.warning(
         `Bazel ${invocationLabel(invocation)} execution-log analysis failed: ${error.stack || error}`,
@@ -165,7 +171,7 @@ async function logTestCacheSummary(root = invocationRootPath()) {
   return { reports, aggregates, notes: summaryNotes };
 }
 
-/** Resolve the opt-out step-summary input; the job log is reported regardless. */
+/** Resolve the optional step-summary input; the job log is reported regardless. */
 function writeCacheStepSummaryEnabled(value) {
   const normalized = value.trim().toLowerCase();
   if (normalized === 'true') return true;

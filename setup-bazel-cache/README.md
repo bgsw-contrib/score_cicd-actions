@@ -9,7 +9,9 @@ or show whether Bazel reused build and test results.
 
 ## Quick start
 
-Run checkout first, then add the action before your Bazel commands:
+Run checkout first, then add the action before your Bazel commands. For reports
+and profiling, the corresponding `bazel` or `bazelisk` executable must already
+be available on `PATH` when the action runs.
 
 ```yaml
 steps:
@@ -27,6 +29,12 @@ separate disk caches. `github.job` can be used to share a cache across callers
 of the same reusable workflow.
 
 ## Inputs
+
+### Workspace selection
+
+`working-directory` defaults to `.` (the checkout root). For a nested Bazel module
+built in its own job, set it to that module's directory. See
+[Build a nested module in its own job](./HOW-TO.md#build-a-nested-module-in-its-own-job).
 
 ### Cache identity and publishing
 
@@ -133,10 +141,9 @@ of the same reusable workflow.
   Reporting does not enable Bazel's test-result cache.
 
 - **`report-cache-step-summary`**
-  - Options: `true` (default), `false`.
+  - Options: `true`, `false` (default).
 
-  Set `false` to keep enabled reports in the job log without writing them to
-  the GitHub Actions step summary.
+  Set `true` to also write enabled reports to the GitHub Actions step summary.
 
 - **`enable-profiling`**
   - Options: `auto` (default), `true`, `false`.
@@ -160,7 +167,8 @@ interactions.
 
 ## Choose a guide
 
-- [How-to](./HOW-TO.md): use caches in a build matrix, warm a shared
+- [How-to](./HOW-TO.md): build a nested module in its own job, use a build
+  matrix, warm a shared
   repository cache, and allow selected branches to publish.
 - [Reference](./REFERENCE.md): input defaults, accepted values, outputs, and
   permissions.
