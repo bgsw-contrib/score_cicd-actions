@@ -66,8 +66,10 @@ for (const scenario of [
 for (const scenario of [
   { name: 'exact versions are kept', versions: ['11.1.3', '11.1.3'], keep: true },
   { name: 'newer versions are kept', versions: ['99.0.0', '99.0.0'], keep: true },
+  { name: 'matching linux-user targets are kept', versions: ['11.1.3', '11.1.3'], targetKind: 'linux-user', keep: true },
   { name: 'forced downgrade handles unowned binaries', versions: ['99.0.0', '99.0.0'], downgrade: 'true', keep: false },
   { name: 'missing second target selects a build', versions: ['11.1.3', null], keep: false },
+  { name: 'missing linux-user target selects a build', versions: ['11.1.3', null], targetKind: 'linux-user', keep: false },
   { name: 'older second target selects a build', versions: ['11.1.3', '1.0.0'], keep: false },
   { name: 'unrecognized second target selects a build', versions: ['11.1.3', 'unknown'], keep: false },
   { name: 'no installed targets selects a build', versions: [null, null], keep: false },
@@ -81,7 +83,8 @@ for (const scenario of [
       const targets = ['review_aarch64', 'review_x86_64'];
       targets.forEach((target, index) => {
         if (scenario.versions[index] === null) return;
-        fs.writeFileSync(path.join(bin, `qemu-system-${target}`),
+        const executable = scenario.targetKind === 'linux-user' ? `qemu-${target}` : `qemu-system-${target}`;
+        fs.writeFileSync(path.join(bin, executable),
           `#!/bin/sh\necho 'QEMU emulator version ${scenario.versions[index]}'\n`, { mode: 0o755 });
       });
       const output = path.join(temporary, 'output');
@@ -98,7 +101,7 @@ for (const scenario of [
           ...process.env,
           PATH: `${bin}:${process.env.PATH}`,
           CACHE_HIT: scenario.cache || '',
-          QEMU_TARGETS: targets.map(target => `${target}-softmmu`).join(','),
+          QEMU_TARGETS: targets.map(target => `${target}-${scenario.targetKind || 'softmmu'}`).join(','),
           QEMU_VERSION: '11.1.3',
           ALLOW_DOWNGRADE: scenario.downgrade || 'false',
           BUILT_INSTALL_PREFIX: '/opt/qemu/11.1.3',
@@ -119,6 +122,95 @@ for (const scenario of [
     }
   });
 }
+
+test('source extraction and cleanup stay in runner temp and preserve a caller directory', () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qemu-source-dir-test-'));
+  try {
+    const workspace = path.join(temporary, 'workspace');
+    const runnerTemp = path.join(temporary, 'runner-temp');
+    const callerSource = path.join(workspace, 'qemu-11.1.3');
+    fs.mkdirSync(callerSource, { recursive: true });
+    fs.mkdirSync(runnerTemp);
+    const sentinel = path.join(callerSource, 'caller-file');
+    fs.writeFileSync(sentinel, 'keep');
+
+    const sourceStep = action.runs.steps.find(step => step.id === 'qemu-source');
+    const downloadStep = action.runs.steps.find(step => step.name.startsWith('Download, verify, extract QEMU source'));
+    const buildStep = action.runs.steps.find(step => step.name.startsWith('Build and install QEMU'));
+    const cleanupStep = action.runs.steps.find(step => step.name === 'Clean QEMU source');
+    assert.equal(downloadStep['working-directory'], '${{ steps.qemu-source.outputs.path }}');
+    assert.equal(buildStep['working-directory'], '${{ steps.qemu-source.outputs.path }}/qemu-${{ inputs.qemu-version }}');
+
+    const output = path.join(temporary, 'output');
+    const prepared = spawnSync('bash', ['-c', sourceStep.run], {
+      cwd: workspace,
+      encoding: 'utf8',
+      env: { ...process.env, RUNNER_TEMP: runnerTemp, GITHUB_OUTPUT: output },
+    });
+    assert.equal(prepared.status, 0, prepared.stderr);
+    const sourceDir = fs.readFileSync(output, 'utf8').trim().slice('path='.length);
+    assert(sourceDir.startsWith(`${runnerTemp}${path.sep}`));
+    assert(fs.existsSync(sourceDir));
+
+    const cleaned = spawnSync('bash', ['-c', cleanupStep.run], {
+      encoding: 'utf8',
+      env: { ...process.env, SOURCE_DIR: sourceDir },
+    });
+    assert.equal(cleaned.status, 0, cleaned.stderr);
+    assert.equal(fs.existsSync(sourceDir), false);
+    assert.equal(fs.readFileSync(sentinel, 'utf8'), 'keep');
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('install prefix is not evaluated as shell code when added to PATH', () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qemu-path-injection-test-'));
+  try {
+    const marker = path.join(temporary, 'executed');
+    const pathFile = path.join(temporary, 'github-path');
+    const addPath = action.runs.steps.find(step => step.name === 'Add QEMU to PATH');
+    const maliciousPath = `$(touch ${marker})`;
+    assert.equal(addPath.env.BIN_PATH, '${{ steps.qemu-policy.outputs.bin-path }}');
+    assert(!addPath.run.includes('${{'));
+
+    const result = spawnSync('bash', ['-c', addPath.run], {
+      encoding: 'utf8',
+      env: { ...process.env, BIN_PATH: maliciousPath, GITHUB_PATH: pathFile },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(fs.readFileSync(pathFile, 'utf8'), `${maliciousPath}\n`);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('install prefix rejects newlines that could forge step outputs', () => {
+  const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qemu-prefix-newline-test-'));
+  try {
+    const compute = action.runs.steps.find(step => step.id === 'vars');
+    const output = path.join(temporary, 'output');
+    const result = spawnSync('bash', ['-c', compute.run.replace('${{ runner.os }}', 'Linux')], {
+      cwd: temporary,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        GITHUB_WORKSPACE: temporary,
+        GITHUB_OUTPUT: output,
+        INSTALL_PREFIX_BASE: 'safe\nbin-path=/tmp/attacker',
+        QEMU_VERSION: '11.1.3',
+        QEMU_TARGETS: 'x86_64-softmmu',
+        CONFIGURE_ARGS: '',
+        EXTRA_BUILD_DEPS: '',
+      },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /must not contain newline/);
+  } finally {
+    fs.rmSync(temporary, { recursive: true, force: true });
+  }
+});
 
 test('source build leaves qemu-utils installed when no requested binary owns it', () => {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'qemu-utils-policy-test-'));

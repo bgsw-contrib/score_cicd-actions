@@ -78,8 +78,9 @@ The action adds `bin-path` to `PATH` for subsequent steps in the same job. Outpu
 
 ## Behavior
 
-- On a cache miss, every requested softmmu target must have a recognizable preinstalled QEMU version that meets the version policy, with all executables in the same bin directory. Exact version matches are always kept. Newer versions are kept unless `allow-downgrade` is `true`; an older, missing, or unrecognized target triggers a source build of all requested targets. Executables without an owning Debian package do not prevent a source build.
+- On a cache miss, every requested softmmu or linux-user target must have a recognizable preinstalled QEMU version that meets the version policy, with all executables in the same bin directory. Exact version matches are always kept. Newer versions are kept unless `allow-downgrade` is `true`; an older, missing, or unsupported target triggers a source build of all requested targets. Executables without an owning Debian package do not prevent a source build.
 - The installation base directory is prepared before cache restore. On a cache miss, the version-specific installation directory is created only when a source build is selected; keeping a preinstalled QEMU does not create that directory.
+- QEMU source archives are extracted into a unique directory under `RUNNER_TEMP`; cleanup removes only that directory and leaves similarly named paths in the caller's workspace untouched.
 - QEMU source archives are verified with the published detached GPG signature before extraction.
 - Builds are cached by runner OS, machine architecture, distribution release, QEMU version, installation prefix, targets, configure arguments, and extra build dependencies.
 - On a cache miss, build dependencies remain installed for the rest of the job so later build or test steps can use them.
