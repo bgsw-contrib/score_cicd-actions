@@ -11,7 +11,7 @@ Use the action from a GitHub Actions workflow:
 ```yaml
 jobs:
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -33,7 +33,7 @@ Pin the action to a commit SHA for immutable builds:
 
 | Input | Default | Description |
 | --- | --- | --- |
-| `qemu-version` | `11.1.1` | QEMU release to download from `download.qemu.org` and build. |
+| `qemu-version` | `11.1.1` | QEMU release to download from `download.qemu.org` and build. Must match `X.Y.Z` (digits and dots only). |
 | `allow-downgrade` | `false` | Build `qemu-version` instead of keeping a newer preinstalled QEMU. An exact version match is always kept. |
 | `qemu-targets` | `aarch64-softmmu,x86_64-softmmu` | Comma-separated targets passed to `--target-list`. |
 | `install-prefix` | `/opt/qemu` | Base installation directory. The QEMU version is appended. |
@@ -41,6 +41,7 @@ Pin the action to a commit SHA for immutable builds:
 | `extra-build-deps` | Empty | Additional space-separated apt packages required by custom configurations. |
 | `nproc` | Automatic | Number of parallel `make` jobs. Empty uses the runner CPU count. |
 | `validation-target` | `aarch64` | Target validated with `-machine help`. Empty disables validation. |
+| `enable-kvm-access` | `false` | Grant the job's runner user ACL read/write access to `/dev/kvm` for the duration of the job; revoked afterwards. |
 
 For example, build multiple targets with a custom configure option:
 
@@ -61,8 +62,9 @@ To replace a newer installed QEMU with the requested version, set `allow-downgra
 
 | Output | Description |
 | --- | --- |
-| `install-prefix` | Full directory containing the QEMU installation. |
+| `install-prefix` | Prefix QEMU was built and installed under. Empty when a preinstalled system QEMU was kept instead. |
 | `cache-key` | Cache key used for the build. |
+| `cache-hit` | Whether the QEMU build cache was restored (`true`) or missed (`false`). |
 | `bin-path` | Directory containing the QEMU executables. |
 
 The action adds `bin-path` to `PATH` for subsequent steps in the same job. Outputs are also available through the step ID:
@@ -78,9 +80,9 @@ The action adds `bin-path` to `PATH` for subsequent steps in the same job. Outpu
 
 - On a cache miss, an exact preinstalled QEMU version match is always kept. A newer preinstalled version is kept unless `allow-downgrade` is `true`; an older, missing, or unrecognized version is replaced with a source build of `qemu-version`.
 - QEMU source archives are verified with the published detached GPG signature before extraction.
-- Builds are cached by runner OS, QEMU version, installation prefix, targets, configure arguments, and extra build dependencies.
+- Builds are cached by runner OS, machine architecture, distribution release, QEMU version, installation prefix, targets, configure arguments, and extra build dependencies.
 - On a cache miss, build dependencies remain installed for the rest of the job so later build or test steps can use them.
-- After QEMU setup and validation, if `/dev/kvm` exists its mode is set to `0666` so subsequent steps can access KVM.
+- If `enable-kvm-access` is `true` and `/dev/kvm` exists, the job's runner user is granted `rw` access via a POSIX ACL entry (not a global `0666` permission change), and that ACL entry is removed again once the job finishes, even on failure.
 
 ## Requirements
 

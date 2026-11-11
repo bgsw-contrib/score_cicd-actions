@@ -1,0 +1,15 @@
+{
+  "name": "kvm-access",
+  "version": "1.0.0",
+  "description": "Grant and revoke scoped /dev/kvm ACL access for a job",
+  "private": true,
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "lint": "eslint ."
+  },
+  "devDependencies": {
+    "eslint": "^9.0.0"
+  }
+}
