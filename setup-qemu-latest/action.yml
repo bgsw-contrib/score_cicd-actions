@@ -362,4 +362,4 @@ runs:
 
     - name: Enable KVM access
       if: inputs.enable-kvm-access == 'true'
-      uses: eclipse-score/cicd-actions/setup-qemu-latest/kvm-access@a3558b6f8498ee5417a97f3d0fa601ccde8f78c3
+      uses: eclipse-score/cicd-actions/setup-qemu-latest/kvm-access@a0f35e5915c8e65ae68619d0a86a8787c5999c38
